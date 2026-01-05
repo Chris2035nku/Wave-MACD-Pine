@@ -10,3 +10,8 @@ Noise Cancelling MACD Indicator
 Volume for visibility
 <img width="1819" height="491" alt="image" src="https://github.com/user-attachments/assets/340310c3-2740-47b9-80a8-4b651d77194a" />
 
+# Trend Following 3d
+Trend Validator
+<img width="1496" height="460" alt="image" src="https://github.com/user-attachments/assets/ca712a35-5f4e-42f1-ab3a-a49f425b7016" />
+
+
