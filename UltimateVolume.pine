@@ -1,0 +1,673 @@
+
+//@version=5
+indicator("Ultimate Volume Indicator", overlay=false, max_boxes_count=500, max_lines_count = 500, max_labels_count=500)
+
+
+import kurtsmock/ArrayMatrixHUD/2 as sa
+import kurtsmock/PD/1 as pd
+////////////////////////////////////////
+// Inputs //////////////////////////////
+//////////////////////////////////////// {
+rv_g1 = 'Indicator Switches'
+rv_g2 = 'rVol Settings'
+rv_g3 = 'Better-er Volume Settings'
+rv_g4 = 'Volume Average Comparison/Bar Colors'
+rv_g5 = 'Validation Table Setting'
+tv    = 'Total Volume',     rv    = 'rVol'
+vpt   = 'Volume Per Tick',  zvol  = 'Z-Score of Ln(Volume)',   nan = 'None'
+tt1   = 'Check the box if the symbol\'s exchange adjusts timestamp for Daylight Savings Time.\n\nNOTE: Cryptocurrencies do not adjust for DST.\n\n The script has some logic to test if it is working properly, but you\'ll want to make sure you keep this in mind. It won\'t catch everything.'
+
+s_bvol      = input.bool(true, group=rv_g1, inline='a', title='Better Volume | ')
+s_rate      = input.bool(false, group=rv_g1, inline='a', title='Volume Rating | ')
+s_weit      = input.bool(false, group=rv_g1, inline='a', title='Weighted Volume')
+s_col       = input.bool(true, group=rv_g1, inline='b', title='Colored Bars |')
+s_val       = input.bool(false, group=rv_g1, inline='b', title='Validation Table | ')
+s_tab       = input.bool(false, group=rv_g1, inline='b', title='Legend Table')
+s_dlst      = input.bool(true , group=rv_g1,             title='Daylight Savings Time Switch',   tooltip=tt1)
+c_mode      = input.string( rv, group=rv_g1,             title='Volume Mode',                    options = [rv, tv])
+c_calc      = input.string(nan, group=rv_g1,             title='Additional Calculation',         options = [vpt, zvol, nan])
+
+i_cycles    = input.int(    10, group=rv_g2,             title='rVol Cycles',                    minval=1) + 1
+
+i_bvLength  = input.int(    20, group=rv_g3,             title='Better-er Lookback')
+i_maLen     = input.int(    20, group=rv_g4,             title='Volume Moving Average Length')
+i_uv        = input.float( 2.2, group=rv_g4,             title='Ultra High Volume Ratio')
+i_vhv       = input.float( 1.8, group=rv_g4,             title='Very High Volume Ratio')
+i_hv        = input.float( 1.2, group=rv_g4,             title='High Volume Ratio')
+i_nv        = input.float( 0.8, group=rv_g4,             title='Normal Volume Ratio')
+i_lv        = input.float( 0.4, group=rv_g4,             title='Low Volume Ratio')
+// }
+
+////////////////////////////////////////
+// rVol ////////////////////////////////
+//////////////////////////////////////// {
+// -- Absolute time reference at beginning of chart {
+t = time("D")
+var START_BAR = 0
+if t != t[1] and START_BAR == 0 
+    START_BAR := bar_index
+
+var START_TIME = 0
+var START_HOUR = 0
+var START_MIN  = 0
+var START_SEC  = 0
+if bar_index == START_BAR and START_BAR > 0
+    START_TIME := time_close
+    START_HOUR := hour
+    START_MIN  := minute
+    START_SEC  := second
+
+// plot(START_BAR)
+// plot(START_TIME)
+// plot(START_HOUR)
+// plot(START_MIN)
+// plot(START_SEC)
+//}
+
+// -- Find Beginning Bar of Interval (Daily Open) {
+newInterval         = false
+var newTime         = int(na)
+var rollingDays     = 0
+var rollingBars     = 0
+var totalDays       = 0
+
+rollingBars += 1
+if rollingBars >= i_cycles
+    rollingBars := 0
+
+DST    = (time_close - nz(newTime) + (month >= 3 and month < 11 ? 3600000 : -3600000)) % 86400000
+notDST = (time_close - math.max(nz(newTime), START_TIME)) % 86400000
+newInt =  s_dlst and month >= 3 and month <= 11 ? 
+         (DST == 0 and notDST > DST and DST[1] > 0) or (notDST == 0 and DST > notDST) :
+          notDST == 0
+
+if newInt or t != t[1]
+    newInterval := true
+    newTime     := time_close
+    rollingDays += 1
+    totalDays   += 1
+if rollingDays >= i_cycles
+    rollingDays := 0
+
+curBarofDay      = timeframe.isseconds ? 0 : ta.barssince(newInterval)
+barsInSession    = timeframe.isintraday ? ((24 * 60) / timeframe.multiplier) : timeframe.multiplier
+barsInSession   := math.floor(barsInSession) == barsInSession and timeframe.isintraday ? barsInSession - 1 : math.floor(barsInSession)
+
+// plot(DST, color=color.purple)
+// plot(notDST)
+// plot(newInt ? 1 : 0, color=color.fuchsia)
+// plotchar(newInterval, char="*", location = location.bottom, size = size.large)
+// plot(rollingDays, color=color.orange)
+// plot(rollingBars, color=color.orange)
+// plot(curBarofDay, color=color.green)
+// plot(barsInSession, color=color.red)
+// plot(totalDays)
+//}
+
+var values = matrix.new<float>(i_cycles, barsInSession + 1, 0)
+if barstate.isconfirmed and totalDays > 2 and not(timeframe.isseconds)
+    matrix.set(values, rollingDays, math.min(curBarofDay, barsInSession), volume)
+else if barstate.isconfirmed and totalDays > 2 and timeframe.isseconds
+    matrix.set(values, rollingBars, 0, volume)
+
+histVolume = array.new_float()
+avgHistVol = 0.0
+if not(na(matrix.col(values, math.min(curBarofDay,barsInSession))))
+    histVolume := matrix.col(values, math.min(curBarofDay,barsInSession))
+    if not(na(array.avg(histVolume))) and barstate.isrealtime
+        avgHistVol := array.avg(histVolume)
+    else if not(na(array.avg(histVolume))) and barstate.ishistory
+        array.remove(histVolume, rollingDays)
+        avgHistVol := array.avg(histVolume)
+
+rVol = volume / avgHistVol
+_vol = c_mode == rv ? rVol : volume
+//}
+
+////////////////////////////////////////
+// VPT & Z-Vol /////////////////////////
+//////////////////////////////////////// {
+dist     = pd.tick("rg")
+logVol   = math.log(_vol)
+avgVol   = ta.sma(logVol, 1000)
+stdevVol = ta.stdev(logVol, 1000)
+zvolTime = timenow > time + ((time_close - time) * 0.30) // Time delay for z-score of log(vol) to appear. Visually appealing and volume info before this point is not useful. 
+
+_vpt     = _vol / dist
+_zVol    = (logVol - avgVol) / stdevVol
+_vol := c_calc == vpt ? _vpt : c_calc == zvol ? (zvolTime ? _zVol : 0) : _vol
+//}
+
+////////////////////////////////////////
+// Volume Comparison With rVol /////////
+//////////////////////////////////////// {
+vma     = ta.sma(_vol, i_maLen)
+uhvMin  = vma * i_uv, vhvMin = vma * i_vhv, hvMin = vma * i_hv, nvMin = vma * i_nv, lvMin = vma * i_lv
+volUHV  = c_mode == tv or c_calc == vpt ? _vol >= uhvMin                   ? true : false : _vol >= i_uv                   ? true : false
+volVHV  = c_mode == tv or c_calc == vpt ? _vol >= vhvMin and _vol < uhvMin ? true : false : _vol >= i_vhv and _vol < i_uv  ? true : false
+volHV   = c_mode == tv or c_calc == vpt ? _vol >= hvMin  and _vol < vhvMin ? true : false : _vol >= i_hv  and _vol < i_vhv ? true : false
+volNV   = c_mode == tv or c_calc == vpt ? _vol >= nvMin  and _vol < hvMin  ? true : false : _vol >= i_nv  and _vol < i_hv  ? true : false
+volLV   = c_mode == tv or c_calc == vpt ? _vol >= lvMin  and _vol < nvMin  ? true : false : _vol >= i_lv  and _vol < i_nv  ? true : false
+volVLV  = c_mode == tv or c_calc == vpt ? _vol <  lvMin                    ? true : false : _vol <  i_lv                   ? true : false
+_col    = volUHV ? color.new(color.purple, 30) :
+          volVHV ? color.new(color.red, 30) :
+          volHV ? color.new(color.orange, 30) :
+          volNV ? color.new(color.green, 30) :
+          volLV ? color.new(color.blue, 30) : color.new(color.silver, 30)
+defcol  = color.new(color.gray, 50)
+//}
+
+// -- Volume Plot -- // {
+// Placed here to keep volume plot behind Better-er Volume Signals
+o_col =  c_calc == zvol ? close>open ? color.new(color.green, 30) : color.new(color.red, 30) : _col
+plot(volume, style=plot.style_columns, color=s_col ? o_col : defcol)
+hline(c_calc == vpt or c_calc == zvol ? 0 : 1, linestyle=hline.style_dashed)
+//}
+
+////////////////////////////////////////
+// Better-er Volume ////////////////////
+//////////////////////////////////////// {
+rng         = high - low
+v           = _vol
+vBuy        = (close - low) / (high - low) * v
+vSell       = (high - close) / (high - low) * v
+vChurn      = v / rng
+vLow        = ta.lowest(v, i_bvLength)
+
+tClimaxUp   = vBuy   == ta.highest(vBuy, i_bvLength) ? 1 : 0
+tClimaxDn   = vSell  == ta.highest(vSell, i_bvLength) ? 1 : 0
+tChurn      = vChurn == ta.highest(vChurn, i_bvLength) ? 1 : 0
+tLow        = v      == vLow ? 1 : 0
+
+// -- Test Conditions
+climax_up   = tClimaxUp
+climax_down = tClimaxDn
+churn_bar   = tChurn
+def_bar     = not climax_up or climax_down or churn_bar
+climax_churn= tChurn and (tClimaxUp or tClimaxDn)
+low_vol     = tLow
+ccc         = climax_churn ? 1 : low_vol ? 2 : climax_up ? 3 : climax_down ? 4 : churn_bar ? 5 : def_bar ? 6 : 0
+
+// -- Characters
+clear       = color.new(color.white, 100)
+purple      = color.new(#730064, 0)
+blue        = color.new(#00c1e3, 0)
+green       = color.new(#39bd44, 0)
+red         = color.new(#ff391f, 0)
+orng        = color.new(#ffa200, 0)
+
+plotchar(s_bvol and ccc == 1 and vBuy > vSell ? climax_churn : na, 'Climax Up + Churn',   char='▲', location=location.top,    size=size.tiny, color=purple)
+plotchar(s_bvol and ccc == 1 and vSell > vBuy ? climax_churn : na, 'Climax Down + Churn', char='▼', location=location.top,    size=size.tiny, color=purple)
+plotchar(s_bvol and ccc == 3 and vBuy > vSell ? climax_up : na,    'Climax Up',           char='▲', location=location.top,    size=size.tiny, color=green)
+plotchar(s_bvol and ccc == 4 and vSell > vBuy ? climax_down : na,  'Climax Down',         char='▼', location=location.top,    size=size.tiny, color=red)
+plotchar(s_bvol and ccc == 5                  ? churn_bar : na,    'Churn',               char='■', location=location.top,    size=size.tiny, color=orng)
+plotchar(s_bvol and ccc == 2                  ? low_vol : na,      'Low Volume',          char='■', location=location.top,    size=size.tiny, color=blue)
+plotchar(s_bvol and ccc == 6                  ? def_bar : na,      'Default Bar',         char='■', location=location.bottom, size=size.tiny, color=clear)
+// }
+
+// -- Weighted Volume Plot -- // {
+plot(s_weit ? vBuy : na, "vBuy", style = plot.style_area, color = color.new(color.green,70))
+plot(s_weit ? vSell : na, "vSell", style = plot.style_area, color = color.new(color.red,70))
+//}
+
+////////////////////////////////////////
+// Volume Rating ///////////////////////
+//////////////////////////////////////// {
+// Bullish Volume Rating
+///////////////////////// {
+// -- Create Required Arrays
+var vcu = array.new_float(5, float(na))
+
+// -- Create Pivot High and Test
+p_climaxUp = ta.pivothigh(vBuy, 2, 2)
+testBull = ta.valuewhen(p_climaxUp, p_climaxUp, 0) != ta.valuewhen(p_climaxUp[1], p_climaxUp[1], 0) 
+
+// -- Add/Remove to/from Array
+if testBull and not(vBuy[2] == array.get(vcu, 0)) and vBuy[2] > vSell[2] 
+    array.unshift(vcu, vBuy[2])
+if array.size(vcu) > 5
+    array.pop(vcu)
+if (ccc == 1 or ccc == 3) and vBuy > vSell
+    array.fill(vcu, -1.0, 1, 5)
+    array.set(vcu, 0, vBuy)
+
+// -- Sort Array
+vcuSort = array.copy(vcu)
+array.sort(vcuSort, order.descending)
+if array.size(vcuSort) > 5
+    array.pop(vcuSort)
+
+// -- Rate Bullish Volume Pivot Height
+vcuRating = float(na)
+if vBuy[2] == array.get(vcuSort, 0)
+    vcuRating := 1
+else if vBuy[2] == array.get(vcuSort, 1)
+    vcuRating := 2
+else if vBuy[2] == array.get(vcuSort, 2)
+    vcuRating := 3
+else if vBuy[2] == array.get(vcuSort, 3)
+    vcuRating := 4
+else if vBuy[2] == array.get(vcuSort, 4)
+    vcuRating := 5
+else
+    vcuRating := float(na)
+// -- Bullish Volume Ratings
+plotchar(s_rate and vcuRating == 1 ? testBull : na, 'piv_u1', char='', text='1', location = location.top, color = color.green, offset=-2, size=size.tiny)
+plotchar(s_rate and vcuRating == 2 ? testBull : na, 'piv_u2', char='', text='2', location = location.top, color = color.green, offset=-2, size=size.tiny)
+plotchar(s_rate and vcuRating == 3 ? testBull : na, 'piv_u3', char='', text='3', location = location.top, color = color.green, offset=-2, size=size.tiny)
+plotchar(s_rate and vcuRating == 4 ? testBull : na, 'piv_u4', char='', text='4', location = location.top, color = color.green, offset=-2, size=size.tiny)
+plotchar(s_rate and vcuRating == 5 ? testBull : na, 'piv_u5', char='', text='5', location = location.top, color = color.green, offset=-2, size=size.tiny)
+//}
+
+// Bearish Volume Rating
+///////////////////////// {
+// -- Create Required Arrays
+var vcd = array.new_float(5, float(na))
+
+// -- Create Pivot High and Test
+p_climaxDn = ta.pivothigh(vSell, 2, 2)
+testBear = ta.valuewhen(p_climaxDn, p_climaxDn, 0) != ta.valuewhen(p_climaxDn[1], p_climaxDn[1], 0) 
+
+// -- Add/Remove to/from Array
+if testBear and not(vSell[2] == array.get(vcd, 0)) and vSell[2] > vBuy[2]
+    array.unshift(vcd, vSell[2])
+if array.size(vcd) > 5
+    array.pop(vcd)
+if (ccc == 1 or ccc == 4) and vSell > vBuy
+    array.fill(vcd, -1.0, 1, 5)
+    array.set(vcd, 0, vSell)
+
+// -- Sort Array
+vcdSort = array.copy(vcd)
+array.sort(vcdSort, order.descending)
+if array.size(vcdSort) > 5
+    array.pop(vcdSort)
+
+// -- Rate Bearish Volume Pivot Height
+vcdRating = float(na)
+if vSell[2] == array.get(vcdSort, 0)
+    vcdRating := 1
+else if vSell[2] == array.get(vcdSort, 1)
+    vcdRating := 2
+else if vSell[2] == array.get(vcdSort, 2)
+    vcdRating := 3
+else if vSell[2] == array.get(vcdSort, 3)
+    vcdRating := 4
+else if vSell[2] == array.get(vcdSort, 4)
+    vcdRating := 5
+else
+    vcdRating := float(na)
+
+// -- Bear Volume Ratings
+plotchar(s_rate and vcdRating == 1 ? testBear : na, 'piv_d1', char='', text='1', location = location.top, color = color.red, offset=-2, size=size.tiny)
+plotchar(s_rate and vcdRating == 2 ? testBear : na, 'piv_d2', char='', text='2', location = location.top, color = color.red, offset=-2, size=size.tiny)
+plotchar(s_rate and vcdRating == 3 ? testBear : na, 'piv_d3', char='', text='3', location = location.top, color = color.red, offset=-2, size=size.tiny)
+plotchar(s_rate and vcdRating == 4 ? testBear : na, 'piv_d4', char='', text='4', location = location.top, color = color.red, offset=-2, size=size.tiny)
+plotchar(s_rate and vcdRating == 5 ? testBear : na, 'piv_d5', char='', text='5', location = location.top, color = color.red, offset=-2, size=size.tiny)
+//}
+
+// Churn Rating
+///////////////////////// {
+// -- Create Required Arrays
+var vcc = array.new_float(5, float(na))
+
+// -- Create Pivot High and Test
+p_churn = ta.pivothigh(vChurn, 2, 2)
+testChurn = ta.valuewhen(p_churn, p_churn, 0) != ta.valuewhen(p_churn[1], p_churn[1], 0) 
+
+// -- Add/Remove to/from Array
+if testChurn and not(ccc == 1) and not(vChurn[2] == array.get(vcc, 0))
+    array.unshift(vcc, vChurn[2])
+if array.size(vcc) > 5
+    array.pop(vcc)
+if ccc == 5
+    array.fill(vcc, -1.0, 1, 5)
+    array.set(vcc, 0, vChurn)
+
+// -- Sort Array
+vccSort = array.copy(vcc)
+array.sort(vccSort, order.descending)
+if array.size(vccSort) > 5
+    array.pop(vccSort)
+
+// -- Rate Bearish Volume Pivot Height
+vccRating = float(na)
+if vChurn[2] == array.get(vccSort, 0)
+    vccRating := 1
+else if vChurn[2] == array.get(vccSort, 1)
+    vccRating := 2
+else if vChurn[2] == array.get(vccSort, 2)
+    vccRating := 3
+else if vChurn[2] == array.get(vccSort, 3)
+    vccRating := 4
+else if vChurn[2] == array.get(vccSort, 4)
+    vccRating := 5
+else
+    vccRating := float(na)
+
+// -- Churn Volume Ratings
+plotchar(s_rate and vccRating == 1 ? testChurn : na, 'piv_c1', char='', text='1', location = location.bottom, color = color.black, offset=-2, size=size.tiny)
+plotchar(s_rate and vccRating == 2 ? testChurn : na, 'piv_c2', char='', text='2', location = location.bottom, color = color.black, offset=-2, size=size.tiny)
+plotchar(s_rate and vccRating == 3 ? testChurn : na, 'piv_c3', char='', text='3', location = location.bottom, color = color.black, offset=-2, size=size.tiny)
+plotchar(s_rate and vccRating == 4 ? testChurn : na, 'piv_c4', char='', text='4', location = location.bottom, color = color.black, offset=-2, size=size.tiny)
+plotchar(s_rate and vccRating == 5 ? testChurn : na, 'piv_c5', char='', text='5', location = location.bottom, color = color.black, offset=-2, size=size.tiny)
+//}
+//}
+
+////////////////////////////////////////
+// Table Color Legend //////////////////
+//////////////////////////////////////// {
+ip_col = color.new(color.blue, 90)
+var table ip = table.new(position.middle_right, columns=3, rows=8, bgcolor=ip_col, frame_color=color.black, frame_width=1, border_color=color.black, border_width=1)
+if s_tab
+    table.cell(ip, 1, 1, 'Better-er Volume',    text_color=#000000,      text_halign=text.align_center, text_size=size.small)
+    table.cell(ip, 1, 2, '▲ Climax Up+Chrn',    text_color=#9e0089,      text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 1, 3, '▼ Climax Down+Chrn',  text_color=#9e0089,      text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 1, 4, '▲ Climax Up',         text_color=#39bd44,      text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 1, 5, '▼ Climax Down',       text_color=#ff391f,      text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 1, 6, '■ Low Volume',        text_color=#00c1e3,      text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 1, 7, '■ Churn',             text_color=#ffa200,      text_halign=text.align_right,  text_size=size.small)
+    
+    table.cell(ip, 2, 1, 'Volume Threshold',    text_color=#000000,      text_halign=text.align_center, text_size=size.small)
+    table.cell(ip, 2, 2, 'Ultra High Volume',   text_color=color.purple, text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 2, 3, 'Very High Volume',    text_color=color.red,    text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 2, 4, 'High Volume',         text_color=color.orange, text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 2, 5, 'Normal Volume',       text_color=color.green,  text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 2, 6, 'Low Volume',          text_color=color.blue,   text_halign=text.align_right,  text_size=size.small)
+    table.cell(ip, 2, 7, 'Very Low Volume',     text_color=color.silver, text_halign=text.align_right,  text_size=size.small)
+//}
+
+////////////////////////////////////////
+// Validate Volume Values //////////////
+//////////////////////////////////////// {
+
+i_valOff = input.int(0, group=rv_g5, title='Validation Table Offset', minval=0)
+offset   = i_valOff                       
+if s_val 
+    sa.viewArray(histVolume, position.top_right, size.small, 10, totalDays > 2, offset)
+    tz = table.new(position.top_center,1,1)
+    table.cell(tz, 0,0,syminfo.timezone)
+//}
+
+//                      Inputs
+
+//Volume inputs
+groupVol = "Volume settings"
+i_smoothingType = input.string("SMA", "Volume moving average", options=["SMA", "EMA", "HMA", "RMA", "WMA"], group=groupVol, inline="ma")
+i_volSmaLength = input.int(20, "", group=groupVol, inline="ma")
+i_source = input.source(close, "Source for volume direction", group=groupVol, tooltip="E.g. current close > previous close = buy volume.")
+i_volThreshold = input.int(70, "High volume threshold %", maxval=100, minval=1, group=groupVol)
+i_volAThreshold = input.int(70, "High active volume threshold %", maxval=100, minval=1, group=groupVol)
+
+//Volume source inputs
+groupSource = "Volume source"
+i_symbolBool = input.bool(false, "Override chart volume with custom symbol volume", group=groupSource)
+i_symbolVolume = input.symbol("BTCUSDT", "Symbol for volume data", group=groupSource)
+
+//Timeframe inputs
+groupTf = "Timeframe settings"
+i_tf1 = input.timeframe("1", "LTF for charts <= 30 min", group=groupTf, tooltip="Choose which timeframes are used for volume data when viewed within a given timeframe bracket. E.g. volume data is pulled from 1 minute timeframe when viewing charts at or below 30 min. The lower the chosen timeframe, the more precision you get, but with the cost of less historical data.")
+i_tf2 = input.timeframe("5", "LTF for charts > 30 min & <= 3 hours", group=groupTf)
+i_tf3 = input.timeframe("15", "LTF for charts > 3 hours & <= 8 hours", group=groupTf)
+i_tf4 = input.timeframe("60", "LTF for charts > 8 hours & <= 1D", group=groupTf)
+i_tf5 = input.timeframe("120", "LTF for charts > 1D & <= 3D", group=groupTf)
+i_tf6 = input.timeframe("240", "LTF for charts > 3D", group=groupTf)
+
+//Visual inputs
+groupVisuals = "Visual settings"
+i_displayMode = input.bool(false, "Round percentage values to single numbers", group=groupVisuals, tooltip="Helps with visual clutter when zooming out. Rounded to closest value, e.g. 54% = 5, 56% = 6.")
+i_buyVolCol = input.color(color.teal, "Buy volume", group=groupVisuals, inline="buy")
+i_buyVolACol = input.color(color.green, "Active", group=groupVisuals, inline="buy")
+i_sellVolCol = input.color(color.maroon, "Sell volume", group=groupVisuals, inline="sell")
+i_sellVolACol = input.color(color.red, "Active", group=groupVisuals, inline="sell")
+i_totalVolCol = input.color(color.gray, "Total volume", group=groupVisuals, inline="total")
+
+//Anomaly inputs
+groupMultiCond = "Multi-condition highlights"
+
+i_multiCondition = input.bool(false, "Multi-condition highlights", group=groupMultiCond, inline="multicond")
+i_multiConditionCol = input.color(color.yellow, "", group=groupMultiCond, inline="multicond",tooltip = "Overrides individual anomaly highlights with instances where all selected anomalies occured simultaneously. Example: highlight on a wick down with buy volume threshold and active buy volume threshold exceeded.")
+i_candleFormation = input.string("Close ▲", "Candle formation", options=["Close ▲", "Close ▼", "Reversal ▲", "Reversal ▼", "Expansion ▲", "Expansion ▼"], group=groupMultiCond, inline="candle")
+i_candleFormationBool = input.bool(false, "", group=groupMultiCond, inline="candle")
+
+i_volMultiplier = input.float(1, "Volume multiplier", 0.05, 100, step=0.05, inline="volmult", group=groupMultiCond)
+i_volMultiplierBool = input.bool(false, "", group=groupMultiCond, inline="volmult")
+
+groupAnomaly = "Anomaly highlights"
+
+i_highlightDomBuyVol = input.bool(false, "Buy volume threshold exceeded", group=groupAnomaly, inline="buyvol")
+i_domBuyVolCol = input.color(color.teal, "", group=groupAnomaly, inline="buyvol", tooltip="Colorizes candles on your chart where selected volume anomaly has occured. Useful for gaining reference from the past to get an idea what to expect in the future. Note that context matters a lot.")
+
+i_highlightDomABuyVol = input.bool(false, "Active buy volume threshold exceeded", group=groupAnomaly, inline="buyvola")
+i_domABuyVolCol = input.color(color.green, "", group=groupAnomaly, inline="buyvola")
+
+i_highlightDomSellVol = input.bool(false, "Sell volume threshold exceeded", group=groupAnomaly, inline="sellvol")
+i_domSellVolCol = input.color(color.maroon, "", group=groupAnomaly, inline="sellvol")
+
+i_highlightDomASellVol = input.bool(false, "Active sell volume threshold exceeded", group=groupAnomaly, inline="sellvola")
+i_domASellVolCol = input.color(color.red, "", group=groupAnomaly, inline="sellvola")
+
+i_highlightDivergence = input.bool(false, "Passive-active volume divergence", group=groupAnomaly, inline="divergence")
+i_divergenceCol = input.color(color.fuchsia, "", group=groupAnomaly, inline="divergence")
+
+
+//                      LTF calculations
+
+//If bool is false, use chart symbol, else symbol defined via input menu
+volumeSource = i_symbolBool == false ? syminfo.tickerid : i_symbolVolume
+
+//Convert current timeframe into minutes
+currentTimeframe = timeframe.in_seconds(timeframe.period) / 60
+
+//Dynamic timeframe logic
+dynTf = currentTimeframe <= 30 ? i_tf1 : currentTimeframe > 30 and currentTimeframe <= 180 ? i_tf2 :
+ currentTimeframe > 180 and currentTimeframe <= 480 ? i_tf3 : currentTimeframe > 480 and currentTimeframe <= 1440 ? i_tf4 :
+  currentTimeframe > 1440 and currentTimeframe <= 4320 ? i_tf5 : currentTimeframe > 4320 ? i_tf6 : na
+
+//Fetching LTF volume
+ltfStats() =>
+
+    buyVol = i_source >= i_source[1] ? volume : 0
+    sellVol = i_source < i_source[1] ? volume : 0
+    
+    buyVolActive = i_source >= i_source[1] and volume > volume[1] ? volume : 0
+    sellVolActive = i_source < i_source[1] and volume > volume[1] ? volume : 0
+
+    [buyVol, sellVol, i_source, volume, buyVolActive, sellVolActive]
+
+
+[buyVol, sellVol, ltfSrc, ltfVolume, buyVolActive, sellVolActive]
+ = request.security_lower_tf(volumeSource, dynTf, ltfStats())
+
+
+//                      Arrays
+
+//Sums of sell volume, buy volume and active volumes
+totalSellVol = array.sum(sellVol)
+totalBuyVol = array.sum(buyVol)
+totalVol = totalSellVol + totalBuyVol
+
+totalSellVolA = array.sum(sellVolActive)
+totalBuyVolA = array.sum(buyVolActive)
+totalVolA = totalSellVolA + totalBuyVolA
+
+//Directional volume % of total volume and directional active volume % of total active volume
+buyVolPerc = (totalBuyVol / totalVol)
+sellVolPerc = (totalSellVol / totalVol)
+buyVolPercA = (totalBuyVolA / totalVolA)
+sellVolPercA = (totalSellVolA / totalVolA)
+
+//Defining high buy/sell volume
+highBuyVol = buyVolPerc * 100 >= i_volThreshold
+highSellVol = sellVolPerc * 100 >= i_volThreshold
+
+//Defining high active buy/sell volume
+highBuyVolA = buyVolPercA * 100 >= i_volAThreshold
+highSellVolA = sellVolPercA * 100 >= i_volAThreshold
+
+//Defining volume-active volume divergence
+ActiveVolDisagreement = (buyVolPercA > sellVolPercA and buyVolPerc < sellVolPerc) or (buyVolPercA < sellVolPercA and buyVolPerc > sellVolPerc) 
+
+//Total volume MA
+smoothedValue(source, length) =>
+    i_smoothingType == "SMA" ? ta.sma(source, length) :
+     i_smoothingType == "EMA" ? ta.ema(source, length) :
+      i_smoothingType == "HMA" ? ta.hma(source, length) :
+       i_smoothingType == "RMA" ? ta.rma(source, length) : ta.wma(source, length)
+
+volSma = smoothedValue(totalVol, i_volSmaLength)
+
+
+//                      Multi-condition highlights
+
+//Volume anomaly conditions
+highBuyVolStudy = i_multiCondition and i_highlightDomBuyVol ? highBuyVol : na(close) == false
+highBuyAVolStudy = i_multiCondition and i_highlightDomABuyVol ? highBuyVolA : na(close) == false
+highSellVolStudy = i_multiCondition and i_highlightDomSellVol ? highSellVol : na(close) == false
+highSellAVolStudy = i_multiCondition and i_highlightDomASellVol ? highSellVolA : na(close) == false
+volDivStudy = i_multiCondition and i_highlightDivergence ? ActiveVolDisagreement : na(close) == false
+
+//Additional conditions
+
+//Open and close position 
+closePos = (close - low) / (high - low)
+openPos = (open - low) / (high - low)
+
+//Engulfings. Defined by higher high, lower low with a close at 60%/40% of bar range (0% being the very low, 100% being the very high)
+engulfingUp = high > high[1] and low < low[1] and closePos > 0.60
+engulfingDown = high > high[1] and low < low[1] and closePos < 0.40
+
+//Wicks. Defined by higher high, higher low or lower high, lower low with a close at 60%/40% and open at 40%/60% of bar range.
+wickUp = high < high[1] and low < low[1] and closePos > 0.60 and openPos > 0.40
+wickDown = high > high[1] and low > low[1] and closePos < 0.40 and openPos < 0.60
+
+//Expansions. Defined by higher high, higher low or lower high, lower low with a close at 70% of bar range and range 1.5x higher than previous.
+barRange = high - low
+expUp = high > high[1] and low > low[1] and closePos > 0.70 and barRange > (barRange[1] * 1.5)
+expDown = high < high[1] and low < low[1] and closePos < 0.30 and barRange > (barRange[1] * 1.5)
+
+
+//Specified price related condition
+candleFormStudy = i_multiCondition and i_candleFormation == "Close ▲" and i_candleFormationBool ? close > close[1] : 
+ i_multiCondition and i_candleFormation == "Close ▼" and i_candleFormationBool ? close < close[1] : 
+  i_multiCondition and i_candleFormation == "Reversal ▲" and i_candleFormationBool ? wickUp or engulfingUp : 
+   i_multiCondition and i_candleFormation == "Reversal ▼" and i_candleFormationBool ? wickDown or engulfingDown :
+  i_multiCondition and i_candleFormation == "Expansion ▲" and i_candleFormationBool ? expUp :
+ i_multiCondition and i_candleFormation == "Expansion ▼" and i_candleFormationBool ? expDown : na(close) == false
+
+//Volume multiplier condition
+volMultStudy = i_volMultiplierBool ? totalVol >= (volSma * i_volMultiplier) : na(close) == false
+
+//Spcified anomaly
+studiedAnomaly = highBuyVolStudy and highBuyAVolStudy and highSellVolStudy and highSellAVolStudy and volDivStudy and candleFormStudy and volMultStudy
+
+//No studies selected condition
+allStudiesNa = i_highlightDomBuyVol == false and i_highlightDomABuyVol == false and
+ i_highlightDomSellVol == false and i_highlightDomASellVol == false and i_highlightDivergence == false and i_candleFormationBool == false and i_volMultiplierBool == false
+
+//Defining multi-condition anomaly
+multiCondAnomaly = i_multiCondition and studiedAnomaly and allStudiesNa == false
+
+//Initializing anomaly counter
+var int anomalyCount = 0
+
+//If multi-condition anomaly found, add 1 to counter
+if multiCondAnomaly
+    anomalyCount += 1
+
+//Anomaly counter text for table 
+countText = i_multiCondition and allStudiesNa == true ? "Matches: " + str.tostring(0) + "┃" : 
+ i_multiCondition and allStudiesNa == false ? "Matches: " + str.tostring(anomalyCount) + "┃" : ""
+
+
+//                      Plot related calculations 
+
+//If rounded display mode is true, round percentages to single values, else percentage values with no decimals.
+roundedBuyVol = i_displayMode == true ? math.round(10 * buyVolPerc, 0) : math.round(buyVolPerc, 2) * 100
+roundedSellVol = i_displayMode == true ? math.round(10 * sellVolPerc, 0) : math.round(sellVolPerc, 2) * 100
+roundedBuyVolA = i_displayMode == true ? math.round(10 * buyVolPercA, 0) : math.round(buyVolPercA, 2) * 100
+roundedSellVolA = i_displayMode == true  ? math.round(10 * sellVolPercA, 0) : math.round(sellVolPercA, 2) * 100
+
+//Dominant volume, dominant active volume and appropriate colors
+dominantVolPerc = totalBuyVol >= totalSellVol ? roundedBuyVol : roundedSellVol
+dominantVolAPerc = totalBuyVolA >= totalSellVolA ? roundedBuyVolA : roundedSellVolA
+
+dominantVolAbsolute = totalBuyVol >= totalSellVol ? totalBuyVol : totalSellVol
+dominantVolAAbsolute = totalBuyVolA >= totalSellVolA ? totalBuyVolA : totalSellVolA
+
+dominantVolCol = totalBuyVol >= totalSellVol ? i_buyVolCol : i_sellVolCol 
+dominantVolACol = totalBuyVolA >= totalSellVolA ? i_buyVolACol : i_sellVolACol 
+
+
+//                      Labels, lines, tables
+
+//If volume data is NA (holidays, weekends etc.), plot no text instead of NaN
+dataNotNa = na(totalVol) == false and totalVol > 0
+aDataNotNa = na(totalVolA) == false and totalVolA > 0
+
+//Label text for active volume direction and () to indicate divergences
+ActiveText = totalBuyVolA >= totalSellVolA and ActiveVolDisagreement == false ? "+" : 
+ totalBuyVolA >= totalSellVolA and ActiveVolDisagreement == true ? "(+)" :
+  totalBuyVolA < totalSellVolA and ActiveVolDisagreement == false ? "-" :
+   totalBuyVolA < totalSellVolA and ActiveVolDisagreement == true ? "(-)" : ""
+
+//Label text for indicating high active volume 
+ActiveText2 = highBuyVolA or highSellVolA ? "▲" : ""
+
+//Constructing text for labels
+labelText1 = dataNotNa ? "" + str.tostring(dominantVolPerc) : ""
+labelText2 = aDataNotNa ? ActiveText + "\n" + str.tostring(dominantVolAPerc) + "\n" + ActiveText2 : ""
+
+//Labels, dominant volume %, dominant active volume % and highlights (divergences, threshold exceeded) if applicable
+// label.new(x=bar_index, y=0, xloc=xloc.bar_index, text=labelText1, style=label.style_label_center, color=color.new(color.white, 100), textcolor=dominantVolCol, size=size.normal)
+// label.new(x=bar_index, y=0, xloc=xloc.bar_index, text=labelText2, style=label.style_label_up, color=color.new(color.white, 100), textcolor=dominantVolACol, size=size.normal)
+
+//Line to fill gap between current bar index and next bar index, where real-time volume columns are halfway plotted. 
+// line.new(bar_index, 0, bar_index+1, 0, xloc=xloc.bar_index, color=color.rgb(38, 38, 38), width=18)
+
+//Initializing table
+// var settingsTable = table.new(position = position.top_right, columns = 50, rows = 50, bgcolor = color.new(#2d2d2d, 100), border_width = 1, border_color=color.new(color.black, 100))
+
+//Populating table cell
+// tableSymbol = volumeSource == i_symbolVolume ? i_symbolVolume : syminfo.ticker
+// table.cell(table_id = settingsTable, column = 1, row = 0, text = countText + str.tostring(tableSymbol) + " / " + str.tostring(dynTf) , text_color=color.black) 
+
+
+//                      Plots
+
+//Plots for volume columns, SMA and 0 line
+pTotalVol = plot(dominantVolAbsolute * 1.10, title="Total volume", color=i_totalVolCol, style=plot.style_columns, display=display.all - display.status_line)
+pDomVol = plot(dominantVolAbsolute, title="Dominating volume", color=dominantVolCol, style=plot.style_columns, display=display.all - display.status_line)
+pDomVolA = plot(dominantVolAAbsolute, title="Dominating active volume", color=dominantVolACol, style=plot.style_columns, display=display.all - display.status_line)
+pSma = plot(volSma, title="Volume SMA", style=plot.style_line, linewidth=1, display=display.all - display.status_line)
+// p0 = plot(0, title="0 line", color=color.rgb(38, 38, 38), linewidth=18, display=display.all - display.status_line)
+
+//Plots for high buy/sell volume
+plotshape(highBuyVol and barstate.isconfirmed ? totalBuyVol + totalSellVol : na, title="High buy volume threshold exceeded", style=shape.diamond, text="", color=i_buyVolCol, location=location.absolute, size=size.auto, textcolor=color.white, display=display.all - display.status_line)
+plotshape(highSellVol and barstate.isconfirmed ? totalBuyVol + totalSellVol : na, title="High sell volume threshold exceeded", style=shape.diamond, text="", color=i_sellVolCol, location=location.absolute, size=size.auto, textcolor=color.white, display=display.all - display.status_line)
+plotshape(multiCondAnomaly ? totalBuyVol + totalSellVol : na, title="Multi-condition anomaly", style=shape.xcross, text="", color=i_multiConditionCol, location=location.absolute, size=size.tiny, textcolor=color.white, display=display.all - display.status_line)
+
+plot((volLV or volVLV) and (totalVol < volSma) ? totalBuyVol + totalSellVol: na, title="Total volume", color=#787B86, style=plot.style_columns, display=display.all - display.status_line)
+//Bar highlighter
+
+highlightCond = i_highlightDomBuyVol and highBuyVol ? i_domBuyVolCol : i_highlightDomSellVol and highSellVol? i_domSellVolCol : i_highlightDomABuyVol and highBuyVolA ? i_domABuyVolCol :
+ i_highlightDomASellVol and highSellVolA ? i_domASellVolCol : i_highlightDivergence and ActiveVolDisagreement ? i_divergenceCol : na
+
+barcolor(i_multiCondition == false ? highlightCond : multiCondAnomaly ? i_multiConditionCol : na)
+
+
+ 
+//                      Alerts
+
+//Individual
+alertcondition(highBuyVol and barstate.isconfirmed, "Buy volume threshold exceeded", "Buy volume threshold exceeded anomaly detected.")
+alertcondition(highSellVol and barstate.isconfirmed, "Sell volume threshold exceeded", "Sell volume threshold exceeded anomaly detected.")
+alertcondition(highBuyVolA and barstate.isconfirmed, "Active buy volume threshold exceeded", "Active buy volume threshold exceeded anomaly detected.")
+alertcondition(highSellVolA and barstate.isconfirmed, "Active sell volume threshold exceeded", "Active sell volume threshold exceeded anomaly detected.")
+alertcondition(ActiveVolDisagreement and barstate.isconfirmed, "Volume/active volume divergence", "Volume/active volume divergence anomaly detected.")
+alertcondition(multiCondAnomaly and barstate.isconfirmed, "Multi-condition anomaly", "Multi-condition anomaly detected.")
+
+//Grouped
+alertcondition((highBuyVol or highSellVol) and barstate.isconfirmed, "Buy volume or sell volume threshold exceeded", "Buy volume or sell volume threshold exceeded anomaly detected.")
+alertcondition((highBuyVolA or highSellVolA) and barstate.isconfirmed, "Active buy volume or active sell volume threshold exceeded", "Active buy volume or sell volume threshold exceeded anomaly detected.")
+alertcondition((highBuyVolA or highSellVolA or highBuyVol or highSellVol or ActiveVolDisagreement) and barstate.isconfirmed, "Any volume anomaly (any type of volume threshold exceeded or volume/active volume divergence)", "A volume anomaly (any type of volume threshold exceeded or volume/active volume divergence) detected.")
