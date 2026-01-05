@@ -1,0 +1,177 @@
+//@version=5
+indicator("Scout Range Filter (Parallel Smooth Sell/Exits)", shorttitle="Scout Parallel", overlay=true, max_lines_count=500)
+
+// ===== Inputs =====
+src          = input.source(close, "Source")
+
+// Tight Filter - For Long Entries & Breakouts (your original responsive settings)
+perTight     = input.int(60, "Tight Sampling Period (Long Entries)", minval=5)
+multTight    = input.float(2.3, "Tight Range Multiplier (Long Entries)", minval=0.1, step=0.1)
+
+// Smooth Filter - For Sell Signals & Long Exits (your proven 124/3.5 Range Filter settings)
+perSmooth    = input.int(124, "Smooth Sampling Period (Sells & Long Exits)", minval=5)
+multSmooth   = input.float(3.5, "Smooth Range Multiplier (Sells & Long Exits)", minval=0.1, step=0.1)
+
+anchorTf     = input.timeframe("15", "Anchor timeframe")
+breakLook    = input.int(5, "Breakout lookback bars", minval=1)
+spacingBars  = input.int(5, "Minimum bars between signals", minval=1)
+volumeMult   = input.float(1.3, "Volume multiplier vs SMA20")
+atrLook      = input.int(14, "ATR length", minval=1)
+atrTrigMult  = input.float(1.1, "True range vs ATR multiple")
+
+grpExit      = "Protective Exit"
+useProtect   = input.bool(true, "Enable protective exits", group=grpExit)
+atrTp        = input.float(1.3, "ATR take-profit multiple", group=grpExit)
+roiTp        = input.float(0.014, "ROI take-profit %", step=0.001, group=grpExit)
+trailArm     = input.float(0.005, "Trail activation profit %", step=0.001, group=grpExit)
+trailGive    = input.float(0.009, "Allowed pullback % (base)", step=0.001, group=grpExit)  // base, we'll loosen for longs
+rsiLen       = input.int(14, "RSI length", group=grpExit)
+rsiExitLong  = input.float(42, "RSI exit (long)", group=grpExit)
+rsiExitShort = input.float(58, "RSI exit (short)", group=grpExit)
+wprLen       = input.int(14, "Williams %R length", group=grpExit)
+wprExitLong  = input.float(-78, "Williams exit long", group=grpExit)
+wprExitShort = input.float(-22, "Williams exit short", group=grpExit)
+macdFast     = input.int(12, "MACD fast", group=grpExit)
+macdSlow     = input.int(26, "MACD slow", group=grpExit)
+macdSig      = input.int(9, "MACD signal", group=grpExit)
+macdExitLong = input.float(-0.012, "MACD hist exit long", group=grpExit)
+macdExitShort= input.float(0.012, "MACD hist exit short", group=grpExit)
+
+// ===== Helpers =====
+smoothrng(x, t, m) =>
+    wper = t * 2 - 1
+    avr = ta.ema(math.abs(x - x[1]), t)
+    ta.ema(avr, wper) * m
+
+rngfilt(x, r) =>
+    _f = x
+    _f := x > nz(_f[1]) ? math.max(nz(_f[1]), x - r) : math.min(nz(_f[1]), x + r)
+    _f
+
+// ===== Dual Filters =====
+smrngTight  = smoothrng(src, perTight, multTight)
+filtTight   = rngfilt(src, smrngTight)
+upTight     = filtTight > filtTight[1]
+downTight   = filtTight < filtTight[1]
+
+smrngSmooth = smoothrng(src, perSmooth, multSmooth)
+filtSmooth  = rngfilt(src, smrngSmooth)
+upSmooth    = filtSmooth > filtSmooth[1]
+downSmooth  = filtSmooth < filtSmooth[1]
+
+// Plot both for visual comparison
+plot(filtTight,  "Tight Filter (Longs)", color=upTight ? color.green : color.red, linewidth=2)
+plot(filtSmooth, "Smooth Filter (Sells/Exits)", color=upSmooth ? color.lime : color.maroon, linewidth=2, style=plot.style_linebr)
+
+// ===== Anchor (uses tight params for consistency) =====
+anchorFilterCalc() =>
+    rngfilt(close, smoothrng(close, perTight, multTight))
+
+anchorTrendCalc() =>
+    localFilt = rngfilt(close, smoothrng(close, perTight, multTight))
+    localFilt > localFilt[1] ? 1 : localFilt < localFilt[1] ? -1 : 0
+
+anchorFilt  = request.security(syminfo.tickerid, anchorTf, anchorFilterCalc())
+anchorTrend = request.security(syminfo.tickerid, anchorTf, anchorTrendCalc())
+anchorClose = request.security(syminfo.tickerid, anchorTf, close)
+anchorBull  = anchorTrend == 1 and anchorClose > anchorFilt
+anchorBear  = anchorTrend == -1 and anchorClose < anchorFilt
+
+// ===== Breakout Gates (tight filter for responsiveness) =====
+volSma20 = ta.sma(volume, 20)
+volGate  = volume >= volSma20 * volumeMult
+trueRange = ta.tr(true)
+atrValue  = ta.atr(atrLook)
+rangeGate = trueRange >= atrValue * atrTrigMult
+
+hh = ta.highest(high[1], breakLook)
+ll = ta.lowest(low[1], breakLook)
+
+breakoutLong  = close > filtTight and close > hh
+breakoutShort = close < filtTight and close < ll
+
+var int lastLongBar  = na
+var int lastShortBar = na
+spacingLong  = na(lastLongBar) or bar_index - lastLongBar > spacingBars
+spacingShort = na(lastShortBar) or bar_index - lastShortBar > spacingBars
+
+// Long: tight + up, Short: tight breakout BUT require smooth downtrend for earlier/reliable sells
+longSignal  = breakoutLong and anchorBull and volGate and rangeGate and spacingLong and upTight
+shortSignal = breakoutShort and anchorBear and volGate and rangeGate and spacingShort and downSmooth
+
+if longSignal
+    lastLongBar := bar_index
+if shortSignal
+    lastShortBar := bar_index
+
+// ===== Protective Exits (enhanced with smooth logic) =====
+rsiValue   = ta.rsi(src, rsiLen)
+williams   = ta.wpr(wprLen)
+macdLine   = ta.ema(src, macdFast) - ta.ema(src, macdSlow)
+macdSignal = ta.ema(macdLine, macdSig)
+macdHist   = macdLine - macdSignal
+
+var bool  inLong  = false
+var bool  inShort = false
+var float longEntry = na
+var float shortEntry = na
+var float longPeak  = na
+var float shortPit  = na
+
+if longSignal
+    inLong := true
+    inShort := false
+    longEntry := close
+    longPeak := high
+else if shortSignal
+    inShort := true
+    inLong := false
+    shortEntry := close
+    shortPit := low
+
+if inLong
+    longPeak := na(longPeak) ? high : math.max(longPeak, high)
+if inShort
+    shortPit := na(shortPit) ? low : math.min(shortPit, low)
+
+profitLong  = inLong ? (close - longEntry) / longEntry : na
+profitShort = inShort ? (shortEntry - close) / shortEntry : na
+
+longArm  = useProtect and inLong and nz(profitLong, 0) >= trailArm
+shortArm = useProtect and inShort and nz(profitShort, 0) >= trailArm
+
+// Looser trail for longs (holds trends longer), extra smooth downtrend exit
+exitLongCond = close >= longEntry + atrValue * atrTp or
+     nz(profitLong, 0) >= roiTp or
+     (longArm and close <= longPeak * (1 - trailGive * 1.8)) or  // 80% looser pullback tolerance
+     (longArm and (rsiValue <= rsiExitLong or williams <= wprExitLong or macdHist <= macdExitLong)) or
+     downSmooth  // early exit on smooth filter downtrend
+
+exitShortCond = close <= shortEntry - atrValue * atrTp or
+     nz(profitShort, 0) >= roiTp or
+     (shortArm and close >= shortPit * (1 + trailGive)) or
+     (shortArm and (rsiValue >= rsiExitShort or williams >= wprExitShort or macdHist >= macdExitShort))
+
+exitLong  = useProtect and inLong and exitLongCond
+exitShort = useProtect and inShort and exitShortCond
+
+if exitLong
+    inLong := false
+    longEntry := na
+    longPeak := na
+if exitShort
+    inShort := false
+    shortEntry := na
+    shortPit := na
+
+// ===== Visuals =====
+plotshape(longSignal,  title="Scout Buy",  style=shape.labelup,   location=location.belowbar, text="SCOUT BUY",  color=color.green, textcolor=color.white, size=size.small)
+plotshape(shortSignal, title="Scout Sell", style=shape.labeldown, location=location.abovebar, text="SCOUT SELL", color=color.red,   textcolor=color.white, size=size.small)
+plotshape(exitLong,  "Exit Long",  shape.xcross, location=location.abovebar, text="EXIT LONG", color=color.orange, size=size.small)
+plotshape(exitShort, "Exit Short", shape.xcross, location=location.belowbar, text="EXIT SHORT", color=color.orange, size=size.small)
+
+// ===== Alerts =====
+alertcondition(longSignal,  title="Scout Breakout Buy",  message="Scout breakout BUY (anchor confirmed)")
+alertcondition(shortSignal, title="Scout Breakout Sell", message="Scout breakout SELL (smooth filter confirmed)")
+alertcondition(exitLong,    title="Scout Exit Long",     message="Scout protective/smooth exit LONG")
+alertcondition(exitShort,   title="Scout Exit Short",    message="Scout protective exit SHORT")
