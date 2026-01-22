@@ -18,3 +18,8 @@ Trend Validator
 Trend Validator
 <img width="1712" height="1067" alt="image" src="https://github.com/user-attachments/assets/076c1f27-a028-447b-a0c8-ec69ce73cd49" />
 
+# Order Blocks and Volume Delta
+
+<img width="3737" height="1357" alt="image" src="https://github.com/user-attachments/assets/106cde28-58c2-4763-b864-f83972a6e1e8" />
+
+
