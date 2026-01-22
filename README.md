@@ -14,7 +14,7 @@ Volume for visibility
 Trend Validator
 <img width="1496" height="460" alt="image" src="https://github.com/user-attachments/assets/ca712a35-5f4e-42f1-ab3a-a49f425b7016" />
 
-# Scount Long & Short
+# Scout Long & Short
 Trend Validator
 <img width="1712" height="1067" alt="image" src="https://github.com/user-attachments/assets/076c1f27-a028-447b-a0c8-ec69ce73cd49" />
 
